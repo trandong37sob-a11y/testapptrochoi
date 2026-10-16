@@ -178,13 +178,20 @@ export const SheetsDashboard: React.FC<SheetsDashboardProps> = ({
   const handleLogin = async () => {
     try {
       setLoading(true);
+      setErrorMsg(null);
       const authRes = await googleSignIn();
       if (authRes) {
         onAuthChange(authRes.user, authRes.accessToken);
         await loadData(authRes.accessToken);
       }
     } catch (err: any) {
-      setErrorMsg(err.message || 'Đăng nhập Google thất bại');
+      if (
+        err?.code !== 'auth/popup-closed-by-user' &&
+        err?.code !== 'auth/cancelled-popup-request' &&
+        !err?.message?.includes('popup-closed-by-user')
+      ) {
+        setErrorMsg(err.message || 'Đăng nhập Google thất bại');
+      }
     } finally {
       setLoading(false);
     }

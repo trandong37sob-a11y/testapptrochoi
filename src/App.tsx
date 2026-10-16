@@ -142,8 +142,14 @@ export default function App() {
         setSpreadsheetId(sheet.id);
         setActiveTab('sheets');
       }
-    } catch (e) {
-      console.error(e);
+    } catch (e: any) {
+      if (
+        e?.code !== 'auth/popup-closed-by-user' &&
+        e?.code !== 'auth/cancelled-popup-request' &&
+        !e?.message?.includes('popup-closed-by-user')
+      ) {
+        console.warn('Google connect failed:', e);
+      }
     }
   };
 
