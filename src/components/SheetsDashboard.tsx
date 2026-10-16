@@ -18,6 +18,8 @@ import {
   Copy,
   Radio,
   BellRing,
+  Server,
+  Settings,
 } from 'lucide-react';
 import { User } from 'firebase/auth';
 import {
@@ -28,8 +30,11 @@ import {
   getSavedSpreadsheetId,
   setSavedSpreadsheetId,
   appendResultToSheet,
+  fetchServerResults,
+  fetchServerConfig,
 } from '../services/sheetsService';
 import { googleSignIn, logout, getAccessToken } from '../services/firebase';
+import { ServerSheetConfigModal } from './ServerSheetConfigModal';
 
 interface SheetsDashboardProps {
   user: User | null;
@@ -41,7 +46,6 @@ interface SheetsDashboardProps {
 const formatRelativeTime = (timestamp: string): string => {
   if (!timestamp) return 'Gần đây';
   try {
-    // Expected format: "DD/MM/YYYY HH:mm"
     const parts = timestamp.split(' ');
     if (parts.length >= 2) {
       const [d, m, y] = parts[0].split('/').map(Number);
@@ -72,6 +76,14 @@ export const SheetsDashboard: React.FC<SheetsDashboardProps> = ({
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [copiedUrl, setCopiedUrl] = useState(false);
 
+  // Server Google Sheet configuration state
+  const [serverConfig, setServerConfig] = useState<{
+    googleSheetWebhookUrl: string;
+    googleSheetUrl: string;
+    autoSyncEnabled: boolean;
+  } | null>(null);
+  const [isServerConfigOpen, setIsServerConfigOpen] = useState(false);
+
   // Real-time synchronization
   const [isLiveSync, setIsLiveSync] = useState(true);
   const [lastSyncTime, setLastSyncTime] = useState<Date>(new Date());
@@ -83,44 +95,62 @@ export const SheetsDashboard: React.FC<SheetsDashboardProps> = ({
   const [selectedTopic, setSelectedTopic] = useState('all');
   const [selectedRating, setSelectedRating] = useState('all');
 
-  // Load results from sheet or local cache
+  // Load results from server + Google Sheets + local cache
   const loadData = async (token: string | null, isSilent = false) => {
     if (!isSilent) {
       setErrorMsg(null);
       setLoading(true);
     }
 
-    if (token) {
-      try {
-        const sheet = await findOrCreateMathSpreadsheet(token);
-        setSpreadsheetInfo(sheet);
-
-        const sheetResults = await fetchResultsFromSheet(token, sheet.id);
-        if (sheetResults.length > 0) {
-          // Check if there are new results for live notification
-          if (prevCountRef.current > 0 && sheetResults.length > prevCountRef.current) {
-            const newest = sheetResults[0];
-            setNewResultToast(`🎉 ${newest.studentName} vừa hoàn thành: ${newest.score}đ (${newest.topicName})`);
-            setTimeout(() => setNewResultToast(null), 5000);
-          }
-          prevCountRef.current = sheetResults.length;
-          setResults(sheetResults);
-        } else {
-          const local = getLocalResults();
-          setResults(local);
-          prevCountRef.current = local.length;
-        }
-      } catch (err: any) {
-        if (!isSilent) {
-          console.error('Error loading sheets data:', err);
-          setErrorMsg(err.message || 'Không thể đồng bộ Google Sheets');
-        }
-        setResults(getLocalResults());
+    try {
+      // 1. Fetch server configuration
+      const cfg = await fetchServerConfig();
+      if (cfg) {
+        setServerConfig(cfg);
       }
-    } else {
-      const local = getLocalResults();
-      setResults(local);
-      prevCountRef.current = local.length;
+
+      // 2. Fetch server-recorded results from all students
+      const serverList = await fetchServerResults();
+
+      // 3. If teacher is logged in via OAuth, query direct Google Sheet
+      let directSheetResults: StudentResult[] = [];
+      if (token) {
+        try {
+          const sheet = await findOrCreateMathSpreadsheet(token);
+          setSpreadsheetInfo(sheet);
+          directSheetResults = await fetchResultsFromSheet(token, sheet.id);
+        } catch (err: any) {
+          if (!isSilent) console.warn('Could not fetch direct sheet:', err);
+        }
+      }
+
+      const localList = getLocalResults();
+
+      // Merge and deduplicate records by ID or composite key
+      const pool = [...serverList, ...directSheetResults, ...localList];
+      const uniqueMap = new Map<string, StudentResult>();
+      pool.forEach((r) => {
+        const key = r.id || `${r.timestamp}-${r.studentName}-${r.score}`;
+        if (!uniqueMap.has(key)) {
+          uniqueMap.set(key, r);
+        }
+      });
+
+      const merged = Array.from(uniqueMap.values());
+
+      if (prevCountRef.current > 0 && merged.length > prevCountRef.current) {
+        const newest = merged[0];
+        setNewResultToast(`🎉 ${newest.studentName} vừa hoàn thành: ${newest.score}đ (${newest.topicName})`);
+        setTimeout(() => setNewResultToast(null), 5000);
+      }
+      prevCountRef.current = merged.length;
+      setResults(merged);
+    } catch (err: any) {
+      if (!isSilent) {
+        console.error('Error loading data:', err);
+        setErrorMsg(err.message || 'Không thể đồng bộ dữ liệu');
+      }
+      setResults(getLocalResults());
     }
 
     setLastSyncTime(new Date());
@@ -184,8 +214,9 @@ export const SheetsDashboard: React.FC<SheetsDashboardProps> = ({
   };
 
   const handleCopyLink = () => {
-    if (!spreadsheetInfo?.url) return;
-    navigator.clipboard.writeText(spreadsheetInfo.url);
+    const url = serverConfig?.googleSheetUrl || spreadsheetInfo?.url;
+    if (!url) return;
+    navigator.clipboard.writeText(url);
     setCopiedUrl(true);
     setTimeout(() => setCopiedUrl(false), 2000);
   };
@@ -265,7 +296,7 @@ export const SheetsDashboard: React.FC<SheetsDashboardProps> = ({
         </div>
       )}
 
-      {/* Top Banner: Google Sheets status & Real-time Live Sync */}
+      {/* Top Banner: Google Sheets Server & Real-time Live Sync */}
       <div className="bg-gradient-to-r from-emerald-600 via-teal-600 to-cyan-700 rounded-3xl p-6 text-white shadow-xl relative overflow-hidden">
         <div className="absolute right-0 top-0 translate-x-8 -translate-y-8 w-64 h-64 bg-white/10 rounded-full blur-2xl pointer-events-none" />
 
@@ -289,94 +320,84 @@ export const SheetsDashboard: React.FC<SheetsDashboardProps> = ({
                 </div>
               </div>
               <p className="text-emerald-100 text-xs sm:text-sm mt-1 max-w-xl font-medium">
-                Tự động lưu điểm, xếp loại, thời gian làm bài của học sinh và đồng bộ tức thì lên Google Sheets.
+                Tự động lưu điểm, xếp loại và thời gian làm bài của học sinh trực tiếp vào Google Sheet trên máy chủ của bạn.
               </p>
             </div>
           </div>
 
-          {/* User Auth Info & Actions */}
+          {/* Teacher Server Settings Button & Auth */}
           <div className="flex flex-wrap items-center gap-3 w-full md:w-auto">
+            <button
+              onClick={() => setIsServerConfigOpen(true)}
+              className="py-2.5 px-4 bg-white hover:bg-emerald-50 text-emerald-950 font-black rounded-2xl text-xs sm:text-sm shadow-md transition-all flex items-center gap-2 cursor-pointer border border-white/40 transform hover:scale-102"
+            >
+              <Server className="w-4 h-4 text-emerald-700" />
+              <span>Cấu Hình Google Sheet Máy Chủ</span>
+            </button>
+
             {user ? (
-              <div className="flex items-center gap-3 bg-white/15 backdrop-blur-md px-4 py-2.5 rounded-2xl border border-white/20">
-                <div className="w-9 h-9 rounded-full bg-emerald-400 text-emerald-950 flex items-center justify-center font-bold text-sm shadow-sm overflow-hidden">
-                  {user.photoURL ? (
-                    <img src={user.photoURL} alt={user.displayName || 'User'} className="w-full h-full object-cover" />
-                  ) : (
-                    user.displayName?.[0] || 'GV'
-                  )}
-                </div>
-                <div className="text-left text-xs">
-                  <div className="font-extrabold flex items-center gap-1">
-                    {user.displayName || 'Giáo viên / Phụ huynh'}
-                    <span className="w-2 h-2 rounded-full bg-emerald-300 animate-pulse"></span>
-                  </div>
-                  <div className="text-emerald-200 text-[11px] truncate max-w-[150px]">{user.email}</div>
-                </div>
+              <div className="flex items-center gap-2.5 bg-white/15 backdrop-blur-md px-3.5 py-2 rounded-2xl border border-white/20 text-xs">
+                <span className="font-bold truncate max-w-[120px]">{user.displayName || user.email}</span>
                 <button
                   onClick={handleLogout}
-                  className="p-1.5 rounded-xl hover:bg-white/20 text-white/80 hover:text-white transition-colors cursor-pointer"
-                  title="Đăng xuất"
+                  className="p-1 rounded-lg hover:bg-white/20 text-white/80 hover:text-white"
+                  title="Đăng xuất Google"
                 >
-                  <LogOut className="w-4 h-4" />
+                  <LogOut className="w-3.5 h-3.5" />
                 </button>
               </div>
-            ) : (
-              <button
-                onClick={handleLogin}
-                disabled={loading}
-                className="gsi-material-button bg-white hover:bg-emerald-50 text-slate-800 font-bold px-4 py-2.5 rounded-2xl shadow-lg flex items-center gap-2.5 transition-all transform hover:scale-102 cursor-pointer border border-emerald-200"
-              >
-                <svg version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" className="w-5 h-5">
-                  <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z" />
-                  <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z" />
-                  <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z" />
-                  <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z" />
-                </svg>
-                <span className="text-sm font-bold text-slate-800">
-                  {loading ? 'Đang kết nối...' : 'Đăng nhập Google để lưu Sheet'}
-                </span>
-              </button>
-            )}
+            ) : null}
           </div>
         </div>
 
-        {/* Connected Spreadsheet Box */}
-        {spreadsheetInfo && (
-          <div className="mt-5 pt-4 border-t border-white/20 flex flex-wrap items-center justify-between gap-3 text-xs">
-            <div className="flex items-center gap-2">
-              <span className="text-emerald-300 font-bold">📄 Bảng tính Google:</span>
-              <span className="font-extrabold bg-white/20 px-3 py-1 rounded-lg backdrop-blur-xs">
-                {spreadsheetInfo.name}
+        {/* Server Google Sheet Status Strip */}
+        <div className="mt-5 pt-4 border-t border-white/20 flex flex-wrap items-center justify-between gap-3 text-xs">
+          <div className="flex items-center gap-2">
+            <span className="text-emerald-300 font-bold">📡 Máy chủ Google Sheet:</span>
+            {serverConfig?.googleSheetWebhookUrl ? (
+              <span className="font-extrabold bg-emerald-500/40 text-white px-3 py-1 rounded-lg backdrop-blur-xs flex items-center gap-1.5 border border-emerald-300/40">
+                <span className="w-2 h-2 rounded-full bg-emerald-300 animate-pulse"></span>
+                Đang tự động cập nhật vào Google Sheet
               </span>
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={handleCopyLink}
-                className="flex items-center gap-1 px-3 py-1.5 bg-white/15 hover:bg-white/25 rounded-xl transition-colors cursor-pointer"
-                title="Sao chép liên kết bảng tính"
-              >
-                <Copy className="w-3.5 h-3.5" />
-                {copiedUrl ? 'Đã chép link!' : 'Chép link'}
-              </button>
-              <a
-                href={spreadsheetInfo.url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center gap-1 px-3 py-1.5 bg-emerald-400 hover:bg-emerald-300 text-emerald-950 font-bold rounded-xl transition-all shadow-md cursor-pointer"
-              >
-                <ExternalLink className="w-3.5 h-3.5" />
-                Mở trong Google Sheets
-              </a>
-              <button
-                onClick={() => loadData(accessToken, false)}
-                className="p-1.5 bg-white/15 hover:bg-white/25 rounded-xl transition-colors cursor-pointer"
-                title="Làm mới dữ liệu từ Google Sheets"
-              >
-                <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
-              </button>
-            </div>
+            ) : (
+              <span className="font-semibold bg-amber-500/30 text-amber-100 px-3 py-1 rounded-lg backdrop-blur-xs flex items-center gap-1.5 border border-amber-300/30">
+                <AlertCircle className="w-3.5 h-3.5 text-amber-300" />
+                Chưa gắn Google Sheet máy chủ (Bấm "Cấu hình" ở trên để gắn trong 1 phút)
+              </span>
+            )}
           </div>
-        )}
+
+          <div className="flex items-center gap-2">
+            {(serverConfig?.googleSheetUrl || spreadsheetInfo?.url) && (
+              <>
+                <button
+                  onClick={handleCopyLink}
+                  className="flex items-center gap-1 px-3 py-1.5 bg-white/15 hover:bg-white/25 rounded-xl transition-colors cursor-pointer"
+                  title="Sao chép liên kết bảng tính"
+                >
+                  <Copy className="w-3.5 h-3.5" />
+                  {copiedUrl ? 'Đã chép link!' : 'Chép link Sheet'}
+                </button>
+                <a
+                  href={serverConfig?.googleSheetUrl || spreadsheetInfo?.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-1 px-3 py-1.5 bg-emerald-400 hover:bg-emerald-300 text-emerald-950 font-bold rounded-xl transition-all shadow-md cursor-pointer"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                  Mở Google Sheets
+                </a>
+              </>
+            )}
+            <button
+              onClick={() => loadData(accessToken, false)}
+              className="p-1.5 bg-white/15 hover:bg-white/25 rounded-xl transition-colors cursor-pointer"
+              title="Làm mới dữ liệu từ máy chủ"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+            </button>
+          </div>
+        </div>
       </div>
 
       {errorMsg && (
@@ -547,9 +568,9 @@ export const SheetsDashboard: React.FC<SheetsDashboardProps> = ({
                   <td colSpan={8} className="py-12 text-center text-slate-400">
                     <div className="flex flex-col items-center justify-center gap-2">
                       <HelpCircle className="w-8 h-8 text-slate-300" />
-                      <p className="font-semibold text-slate-600">Chưa có kết quả làm bài nào phù hợp</p>
+                      <p className="font-semibold text-slate-600">Chưa có kết quả làm bài nào</p>
                       <p className="text-xs text-slate-400">
-                        Sau khi học sinh tham gia chơi trò chơi toán học, kết quả sẽ tự động lưu và hiển thị trực tiếp tại đây!
+                        Khi học sinh tham gia chơi trò chơi toán học, kết quả sẽ tự động gửi lên máy chủ và cập nhật vào Google Sheet của bạn!
                       </p>
                     </div>
                   </td>
@@ -607,6 +628,13 @@ export const SheetsDashboard: React.FC<SheetsDashboardProps> = ({
           </table>
         </div>
       </div>
+
+      {/* Server Google Sheet Configuration Modal */}
+      <ServerSheetConfigModal
+        isOpen={isServerConfigOpen}
+        onClose={() => setIsServerConfigOpen(false)}
+        onConfigSaved={() => loadData(accessToken, false)}
+      />
     </div>
   );
 };

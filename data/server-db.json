@@ -1,0 +1,25 @@
+{
+  "config": {
+    "googleSheetWebhookUrl": "",
+    "googleSheetUrl": "",
+    "sheetName": "Kết Quả Học Sinh",
+    "autoSyncEnabled": true
+  },
+  "results": [
+    {
+      "studentName": "Nguyễn Minh Khang",
+      "gradeClass": "Lớp 3A1",
+      "topicName": "Bảng Nhân, Bảng Chia",
+      "gameMode": "Đấu Trường 10 Câu",
+      "score": 100,
+      "correctCount": 10,
+      "totalQuestions": 10,
+      "accuracy": 100,
+      "timeSpentSeconds": 42,
+      "rating": "Xuất Sắc ⭐⭐⭐",
+      "timestamp": "16/10/2026 14:40",
+      "id": "res-1792136454077-r4z5",
+      "syncedToSheet": false
+    }
+  ]
+}

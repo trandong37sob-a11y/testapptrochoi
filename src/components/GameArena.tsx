@@ -28,6 +28,7 @@ import {
   StudentResult,
   appendResultToSheet,
   saveLocalResult,
+  submitResultToServer,
 } from '../services/sheetsService';
 
 interface GameArenaProps {
@@ -205,24 +206,30 @@ export const GameArena: React.FC<GameArenaProps> = ({
       weakPoints: weakTopics.join(', ') || 'Nắm chắc kiến thức!',
     };
 
-    // Save locally
+    // 1. Save locally for instant offline access
     saveLocalResult(resultRecord);
 
-    // Save to Google Sheets if token & sheet available
-    if (accessToken && spreadsheetId) {
-      setSyncStatus('saving');
-      try {
-        const ok = await appendResultToSheet(accessToken, spreadsheetId, resultRecord);
-        if (ok) {
-          setSyncStatus('synced');
-        } else {
-          setSyncStatus('error');
+    // 2. Submit to Server (saves in server DB & automatically updates teacher's Google Sheet!)
+    setSyncStatus('saving');
+    try {
+      const serverRes = await submitResultToServer(resultRecord);
+      
+      // Also write directly if client OAuth token is active
+      if (accessToken && spreadsheetId) {
+        try {
+          await appendResultToSheet(accessToken, spreadsheetId, resultRecord);
+        } catch {
+          // ignore
         }
-      } catch (err) {
-        console.error('Error saving to sheet:', err);
-        setSyncStatus('error');
       }
-    } else {
+
+      if (serverRes.syncedToSheet || serverRes.success) {
+        setSyncStatus('synced');
+      } else {
+        setSyncStatus('local_only');
+      }
+    } catch (err) {
+      console.error('Error submitting result:', err);
       setSyncStatus('local_only');
     }
   };
@@ -308,7 +315,7 @@ export const GameArena: React.FC<GameArenaProps> = ({
             {syncStatus === 'synced' ? (
               <div className="flex items-center gap-2 text-emerald-800 font-bold bg-emerald-50 w-full p-2 rounded-xl">
                 <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-                <span>Đã đồng bộ kết quả lên Google Sheets của bạn!</span>
+                <span>Đã lưu lên máy chủ & tự động cập nhật vào Google Sheet!</span>
               </div>
             ) : syncStatus === 'saving' ? (
               <div className="flex items-center gap-2 text-blue-800 font-medium bg-blue-50 w-full p-2 rounded-xl">
