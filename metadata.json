@@ -1,0 +1,6 @@
+{
+  "name": "Đấu Trường Toán Lớp 3",
+  "description": "Trò chơi học tập sinh động toàn diện cho môn Toán lớp 3, đồng bộ và theo dõi kết quả học sinh qua Google Sheets.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

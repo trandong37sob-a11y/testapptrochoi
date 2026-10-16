@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <script>
+      (function() {
+        try {
+          var _fetch = window.fetch;
+          Object.defineProperty(window, 'fetch', {
+            get: function() {
+              return _fetch;
+            },
+            set: function(fn) {
+              _fetch = fn;
+            },
+            configurable: true,
+            enumerable: true
+          });
+        } catch (e) {
+          // Ignore if already configurable or restricted
+        }
+      })();
+    </script>
+    <title>Đấu Trường Toán Lớp 3</title>
+    <meta name="description" content="Trò chơi học tập sinh động toàn diện cho môn Toán lớp 3, đồng bộ và theo dõi kết quả học sinh qua Google Sheets." />
+    <meta property="og:title" content="Đấu Trường Toán Lớp 3" />
+    <meta property="og:description" content="Trò chơi học tập sinh động toàn diện cho môn Toán lớp 3, đồng bộ và theo dõi kết quả học sinh qua Google Sheets." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+
